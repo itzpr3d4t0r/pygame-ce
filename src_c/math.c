@@ -55,7 +55,7 @@
 #define M_PI_2 (M_PI / 2.0)
 #endif /* M_PI_2 */
 
-#define VECTOR_EPSILON (1e-6)
+static const double epsilon = 1e-6;
 #define VECTOR_MAX_SIZE (3)
 #define STRING_BUF_SIZE_REPR (110)
 #define STRING_BUF_SIZE_STR (103)
@@ -99,7 +99,6 @@ static PyTypeObject pgVectorIter_Type;
 typedef struct {
     PyObject_HEAD double coords[VECTOR_MAX_SIZE]; /* Coordinates */
     Py_ssize_t dim;                               /* Dimension of the vector */
-    double epsilon; /* Small value for comparisons */
 } pgVector;
 
 typedef struct {
@@ -235,7 +234,7 @@ static PyObject *
 vector_smoothstep(pgVector *self, PyObject *args);
 static int
 _vector_reflect_helper(double *dst_coords, const double *src_coords,
-                       PyObject *normal, Py_ssize_t dim, double epsilon);
+                       PyObject *normal, Py_ssize_t dim);
 static PyObject *
 vector_reflect(pgVector *self, PyObject *normal);
 static PyObject *
@@ -285,7 +284,7 @@ static int
 vector2_init(pgVector *self, PyObject *args, PyObject *kwds);
 static int
 _vector2_rotate_helper(double *dst_coords, const double *src_coords,
-                       double angle, double epsilon);
+                       double angle);
 static PyObject *
 vector2_rotate(pgVector *self, PyObject *args);
 static PyObject *
@@ -306,8 +305,7 @@ static int
 vector3_init(pgVector *self, PyObject *args, PyObject *kwds);
 static int
 _vector3_rotate_helper(double *dst_coords, const double *src_coords,
-                       const double *axis_coords, double angle,
-                       double epsilon);
+                       const double *axis_coords, double angle);
 static PyObject *
 vector3_rotate(pgVector *self, PyObject *args);
 static PyObject *
@@ -619,12 +617,6 @@ end:
     Py_XDECREF(vector_string);
     return ret;
 }
-
-static PyMemberDef vector_members[] = {
-    {"epsilon", T_DOUBLE, offsetof(pgVector, epsilon), 0,
-     "small value used in comparisons"},
-    {NULL} /* Sentinel */
-};
 
 static PyObject *
 pgVector_NEW(Py_ssize_t dim)
@@ -1246,6 +1238,12 @@ vector_setx(pgVector *self, PyObject *value, void *closure)
 }
 
 static PyObject *
+vector_getepsilon(pgVector *self, void *closure)
+{
+    return PyFloat_FromDouble(epsilon);
+}
+
+static PyObject *
 vector_gety(pgVector *self, void *closure)
 {
     return PyFloat_FromDouble(self->coords[1]);
@@ -1320,7 +1318,7 @@ vector_richcompare(PyObject *o1, PyObject *o2, int op)
             for (i = 0; i < vec->dim; i++) {
                 diff = vec->coords[i] - other_coords[i];
                 /* test diff != diff to catch NaN */
-                if ((diff != diff) || (fabs(diff) >= vec->epsilon)) {
+                if ((diff != diff) || (fabs(diff) >= epsilon)) {
                     Py_RETURN_FALSE;
                 }
             }
@@ -1328,7 +1326,7 @@ vector_richcompare(PyObject *o1, PyObject *o2, int op)
         case Py_NE:
             for (i = 0; i < vec->dim; i++) {
                 diff = vec->coords[i] - other_coords[i];
-                if ((diff != diff) || (fabs(diff) >= vec->epsilon)) {
+                if ((diff != diff) || (fabs(diff) >= epsilon)) {
                     Py_RETURN_TRUE;
                 }
             }
@@ -1397,7 +1395,7 @@ vector_is_normalized(pgVector *self, PyObject *_null)
 {
     double length_squared =
         _scalar_product(self->coords, self->coords, self->dim);
-    if (fabs(length_squared - 1) < self->epsilon)
+    if (fabs(length_squared - 1) < epsilon)
         Py_RETURN_TRUE;
     else
         Py_RETURN_FALSE;
@@ -1429,7 +1427,7 @@ vector_scale_to_length(pgVector *self, PyObject *length)
 
     old_length = sqrt(_scalar_product(self->coords, self->coords, self->dim));
 
-    if (old_length < self->epsilon) {
+    if (old_length < epsilon) {
         return RAISE(PyExc_ValueError,
                      "Cannot scale a vector with zero length");
     }
@@ -1543,7 +1541,7 @@ vector_slerp(pgVector *self, PyObject *args)
 
     length1 = sqrt(_scalar_product(self->coords, self->coords, self->dim));
     length2 = sqrt(_scalar_product(other_coords, other_coords, self->dim));
-    if ((length1 < self->epsilon) || (length2 < self->epsilon)) {
+    if ((length1 < epsilon) || (length2 < epsilon)) {
         return RAISE(PyExc_ValueError, "can't use slerp with Zero-Vector");
     }
     tmp = (_scalar_product(self->coords, other_coords, self->dim) /
@@ -1565,14 +1563,13 @@ vector_slerp(pgVector *self, PyObject *args)
         return NULL;
     }
     /* special case angle==0 and angle==360 */
-    if ((fabs(angle) < self->epsilon) ||
-        (fabs(fabs(angle) - 2 * M_PI) < self->epsilon)) {
+    if ((fabs(angle) < epsilon) || (fabs(fabs(angle) - 2 * M_PI) < epsilon)) {
         /* approximate with lerp, because slerp diverges with 1/sin(angle) */
         for (i = 0; i < self->dim; ++i)
             ret->coords[i] = self->coords[i] * (1 - t) + other_coords[i] * t;
     }
     /* special case angle==180 and angle==-180 */
-    else if (fabs(fabs(angle) - M_PI) < self->epsilon) {
+    else if (fabs(fabs(angle) - M_PI) < epsilon) {
         PyErr_SetString(PyExc_ValueError,
                         "SLERP with 180 degrees is undefined.");
         Py_DECREF(ret);
@@ -1657,7 +1654,7 @@ vector_smoothstep(pgVector *self, PyObject *args)
 
 static int
 _vector_reflect_helper(double *dst_coords, const double *src_coords,
-                       PyObject *normal, Py_ssize_t dim, double epsilon)
+                       PyObject *normal, Py_ssize_t dim)
 {
     Py_ssize_t i;
     double dot_product, norm_length;
@@ -1697,8 +1694,8 @@ vector_reflect(pgVector *self, PyObject *normal)
         return NULL;
     }
 
-    if (!_vector_reflect_helper(ret->coords, self->coords, normal, self->dim,
-                                self->epsilon)) {
+    if (!_vector_reflect_helper(ret->coords, self->coords, normal,
+                                self->dim)) {
         Py_DECREF(ret);
         return NULL;
     }
@@ -1710,8 +1707,7 @@ vector_reflect_ip(pgVector *self, PyObject *normal)
 {
     double tmp_coords[VECTOR_MAX_SIZE];
 
-    if (!_vector_reflect_helper(tmp_coords, self->coords, normal, self->dim,
-                                self->epsilon)) {
+    if (!_vector_reflect_helper(tmp_coords, self->coords, normal, self->dim)) {
         return NULL;
     }
     memcpy(self->coords, tmp_coords, self->dim * sizeof(tmp_coords[0]));
@@ -1896,7 +1892,7 @@ vector_project_onto(pgVector *self, PyObject *other)
     a_dot_b = _scalar_product(self->coords, other_coords, self->dim);
     b_dot_b = _scalar_product(other_coords, other_coords, self->dim);
 
-    if (b_dot_b < self->epsilon) {
+    if (b_dot_b < epsilon) {
         PyErr_SetString(PyExc_ValueError,
                         "Cannot project onto a vector with zero length");
         Py_DECREF(ret);
@@ -2214,7 +2210,6 @@ vector2_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 
     if (vec != NULL) {
         vec->dim = 2;
-        vec->epsilon = VECTOR_EPSILON;
     }
 
     return (PyObject *)vec;
@@ -2310,7 +2305,7 @@ vector2_update(pgVector *self, PyObject *args, PyObject *kwds)
 
 static int
 _vector2_rotate_helper(double *dst_coords, const double *src_coords,
-                       double angle, double epsilon)
+                       double angle)
 {
     /* make sure angle is in range [0, 2 PI) */
     angle = fmod(angle, TWO_PI);
@@ -2373,8 +2368,7 @@ vector2_rotate_rad(pgVector *self, PyObject *angleObject)
     if (ret == NULL) {
         return NULL;
     }
-    if (!_vector2_rotate_helper(ret->coords, self->coords, angle,
-                                self->epsilon)) {
+    if (!_vector2_rotate_helper(ret->coords, self->coords, angle)) {
         Py_DECREF(ret);
         return NULL;
     }
@@ -2393,7 +2387,7 @@ vector2_rotate_rad_ip(pgVector *self, PyObject *angleObject)
     }
 
     memcpy(tmp, self->coords, 2 * sizeof(double));
-    if (!_vector2_rotate_helper(self->coords, tmp, angle, self->epsilon)) {
+    if (!_vector2_rotate_helper(self->coords, tmp, angle)) {
         return NULL;
     }
     Py_RETURN_NONE;
@@ -2428,8 +2422,7 @@ vector2_rotate(pgVector *self, PyObject *angleObject)
     if (ret == NULL) {
         return NULL;
     }
-    if (!_vector2_rotate_helper(ret->coords, self->coords, angle,
-                                self->epsilon)) {
+    if (!_vector2_rotate_helper(ret->coords, self->coords, angle)) {
         Py_DECREF(ret);
         return NULL;
     }
@@ -2449,7 +2442,7 @@ vector2_rotate_ip(pgVector *self, PyObject *angleObject)
     angle = DEG2RAD(angle);
 
     memcpy(tmp, self->coords, 2 * sizeof(double));
-    if (!_vector2_rotate_helper(self->coords, tmp, angle, self->epsilon)) {
+    if (!_vector2_rotate_helper(self->coords, tmp, angle)) {
         return NULL;
     }
     Py_RETURN_NONE;
@@ -2605,6 +2598,8 @@ static PyMethodDef vector2_methods[] = {
 static PyGetSetDef vector2_getsets[] = {
     {"x", (getter)vector_getx, (setter)vector_setx, NULL, NULL},
     {"y", (getter)vector_gety, (setter)vector_sety, NULL, NULL},
+    {"epsilon", (getter)vector_getepsilon, NULL,
+     "small value used in comparisons", NULL},
     {NULL, 0, NULL, NULL, NULL} /* Sentinel */
 };
 
@@ -2628,7 +2623,6 @@ static PyTypeObject pgVector2_Type = {
     .tp_richcompare = (richcmpfunc)vector_richcompare,
     .tp_iter = vector_iter,
     .tp_methods = vector2_methods,
-    .tp_members = vector_members,
     .tp_getset = vector2_getsets,
     .tp_init = (initproc)vector2_init,
     .tp_new = (newfunc)vector2_new,
@@ -2645,7 +2639,6 @@ vector3_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 
     if (vec != NULL) {
         vec->dim = 3;
-        vec->epsilon = VECTOR_EPSILON;
     }
 
     return (PyObject *)vec;
@@ -2745,7 +2738,7 @@ vector3_update(pgVector *self, PyObject *args, PyObject *kwds)
 
 static int
 _vector3_rotate_helper(double *dst_coords, const double *src_coords,
-                       const double *axis_coords, double angle, double epsilon)
+                       const double *axis_coords, double angle)
 {
     double normalizationFactor;
     double axisLength2 = 0;
@@ -2878,8 +2871,8 @@ vector3_rotate_rad(pgVector *self, PyObject *args)
     if (ret == NULL) {
         return NULL;
     }
-    if (!_vector3_rotate_helper(ret->coords, self->coords, axis_coords, angle,
-                                self->epsilon)) {
+    if (!_vector3_rotate_helper(ret->coords, self->coords, axis_coords,
+                                angle)) {
         Py_DECREF(ret);
         return NULL;
     }
@@ -2903,8 +2896,7 @@ vector3_rotate_rad_ip(pgVector *self, PyObject *args)
     }
 
     memcpy(tmp, self->coords, 3 * sizeof(double));
-    if (!_vector3_rotate_helper(self->coords, tmp, axis_coords, angle,
-                                self->epsilon)) {
+    if (!_vector3_rotate_helper(self->coords, tmp, axis_coords, angle)) {
         return NULL;
     }
     Py_RETURN_NONE;
@@ -2944,8 +2936,8 @@ vector3_rotate(pgVector *self, PyObject *args)
     if (ret == NULL) {
         return NULL;
     }
-    if (!_vector3_rotate_helper(ret->coords, self->coords, axis_coords, angle,
-                                self->epsilon)) {
+    if (!_vector3_rotate_helper(ret->coords, self->coords, axis_coords,
+                                angle)) {
         Py_DECREF(ret);
         return NULL;
     }
@@ -2970,8 +2962,7 @@ vector3_rotate_ip(pgVector *self, PyObject *args)
     }
 
     memcpy(tmp, self->coords, 3 * sizeof(double));
-    if (!_vector3_rotate_helper(self->coords, tmp, axis_coords, angle,
-                                self->epsilon)) {
+    if (!_vector3_rotate_helper(self->coords, tmp, axis_coords, angle)) {
         return NULL;
     }
     Py_RETURN_NONE;
@@ -3498,6 +3489,8 @@ static PyGetSetDef vector3_getsets[] = {
     {"x", (getter)vector_getx, (setter)vector_setx, NULL, NULL},
     {"y", (getter)vector_gety, (setter)vector_sety, NULL, NULL},
     {"z", (getter)vector_getz, (setter)vector_setz, NULL, NULL},
+    {"epsilon", (getter)vector_getepsilon, NULL,
+     "small value used in comparisons", NULL},
     {NULL, 0, NULL, NULL, NULL} /* Sentinel */
 };
 
@@ -3521,7 +3514,6 @@ static PyTypeObject pgVector3_Type = {
     .tp_richcompare = (richcmpfunc)vector_richcompare,
     .tp_iter = vector_iter,
     .tp_methods = vector3_methods,
-    .tp_members = vector_members,
     .tp_getset = vector3_getsets,
     .tp_init = (initproc)vector3_init,
     .tp_new = (newfunc)vector3_new,
@@ -3659,7 +3651,7 @@ vector_elementwiseproxy_richcompare(PyObject *o1, PyObject *o2, int op)
             case Py_EQ:
                 for (i = 0; i < dim; i++) {
                     diff = vec->coords[i] - other_coords[i];
-                    if ((diff != diff) || (fabs(diff) >= vec->epsilon)) {
+                    if ((diff != diff) || (fabs(diff) >= epsilon)) {
                         ret = 0;
                         break;
                     }
@@ -3668,7 +3660,7 @@ vector_elementwiseproxy_richcompare(PyObject *o1, PyObject *o2, int op)
             case Py_NE:
                 for (i = 0; i < dim; i++) {
                     diff = vec->coords[i] - other_coords[i];
-                    if ((diff == diff) && (fabs(diff) < vec->epsilon)) {
+                    if ((diff == diff) && (fabs(diff) < epsilon)) {
                         ret = 0;
                         break;
                     }
@@ -3719,7 +3711,7 @@ vector_elementwiseproxy_richcompare(PyObject *o1, PyObject *o2, int op)
             case Py_EQ:
                 for (i = 0; i < dim; i++) {
                     diff = vec->coords[i] - value;
-                    if (diff != diff || fabs(diff) >= vec->epsilon) {
+                    if (diff != diff || fabs(diff) >= epsilon) {
                         ret = 0;
                         break;
                     }
@@ -3728,7 +3720,7 @@ vector_elementwiseproxy_richcompare(PyObject *o1, PyObject *o2, int op)
             case Py_NE:
                 for (i = 0; i < dim; i++) {
                     diff = vec->coords[i] - value;
-                    if (diff == diff && fabs(diff) < vec->epsilon) {
+                    if (diff == diff && fabs(diff) < epsilon) {
                         ret = 0;
                         break;
                     }
